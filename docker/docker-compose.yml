@@ -1,0 +1,34 @@
+services:
+  ai_env:
+    build: .
+    image: ai-env:v1.0
+    container_name: ai_env
+    network_mode: "host"
+    privileged: true
+    stdin_open: true      # docker run -i
+    tty: true              # docker run -t
+    environment:
+      - DISPLAY=$DISPLAY
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=/tmp/.docker.xauth
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
+      # - /home/user/your_project:/root/your_project
+      - /dev:/dev
+      - /etc/udev/rules.d:/etc/udev/rules.d:ro
+      - /run/udev:/run/udev:ro
+      - /media:/media
+      - /mnt:/mnt
+    restart: unless-stopped
+    command: zsh
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    working_dir: /root

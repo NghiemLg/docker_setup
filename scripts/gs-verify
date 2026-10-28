@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Kiểm tra toàn bộ môi trường trong container: GPU, CUDA, torch, gsplat (forward +
+# backward thật trên GPU), COLMAP, splat-transform, thư viện dữ liệu, OpenGL.
+set -uo pipefail
+
+PASS=0; FAIL=0
+hdr()  { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
+good() { printf '\033[32m  ✔ %s\033[0m\n' "$*"; PASS=$((PASS+1)); }
+bad()  { printf '\033[31m  ✘ %s\033[0m\n' "$*"; FAIL=$((FAIL+1)); }
+
+hdr "GPU / driver"
+if nvidia-smi --query-gpu=name,driver_version,compute_cap,memory.total --format=csv,noheader; then
+  good "nvidia-smi"
+else
+  bad "nvidia-smi không chạy (thiếu nvidia-container-toolkit hoặc deploy.devices?)"
+fi
+
+hdr "CUDA toolkit (nvcc)"
+if nvcc --version | tail -n2; then good "nvcc"; else bad "nvcc"; fi
+echo "  TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-?}  CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES:-?}"
+
+hdr "PyTorch + gsplat (render 1 ảnh và backward trên GPU)"
+if python - <<'PY'
+import torch, gsplat
+from gsplat import rasterization
+print(f"  torch {torch.__version__} | CUDA {torch.version.cuda} | gsplat {gsplat.__version__}")
+assert torch.cuda.is_available(), "torch.cuda.is_available() = False"
+print(f"  device: {torch.cuda.get_device_name(0)} | capability {torch.cuda.get_device_capability(0)}")
+dev = "cuda"
+N = 20000
+means = (torch.randn(N, 3, device=dev) * 0.5).requires_grad_(True)
+with torch.no_grad():
+    means[:, 2] += 3.0
+quats = torch.nn.functional.normalize(torch.randn(N, 4, device=dev), dim=-1)
+scales = torch.rand(N, 3, device=dev) * 0.03
+opacities = torch.rand(N, device=dev)
+colors = torch.rand(N, 3, device=dev)
+viewmats = torch.eye(4, device=dev)[None]
+Ks = torch.tensor([[300.0, 0, 160], [0, 300.0, 120], [0, 0, 1]], device=dev)[None]
+img, alpha, meta = rasterization(means, quats, scales, opacities, colors, viewmats, Ks, 320, 240)
+img.mean().backward()
+print(f"  render {tuple(img.shape)}, alpha mean {alpha.mean().item():.3f}, |grad| {means.grad.abs().sum().item():.3e}")
+PY
+then good "gsplat rasterization forward/backward"; else bad "gsplat"; fi
+
+hdr "CUDA extension của gsplat/examples"
+if python - <<'PY'
+import torch
+from fused_ssim import fused_ssim
+a = torch.rand(1, 3, 64, 64, device="cuda", requires_grad=True)
+b = torch.rand(1, 3, 64, 64, device="cuda")
+s = fused_ssim(a, b); s.backward()
+print(f"  fused_ssim = {s.item():.4f}")
+import fused_bilagrid, ppisp  # noqa: F401
+print("  fused_bilagrid, ppisp: import OK")
+PY
+then good "fused-ssim / fused-bilagrid / ppisp"; else bad "CUDA extension examples"; fi
+
+hdr "COLMAP"
+if command -v colmap >/dev/null; then
+  # Lưu output trước rồi grep (tránh SIGPIPE khi grep -q thoát sớm với pipefail)
+  CHELP="$(colmap -h 2>&1)"
+  grep -iE 'COLMAP [0-9]' <<<"$CHELP" | sed -n '1s/^/  /p'
+  if grep -qi 'with CUDA' <<<"$CHELP"; then good "COLMAP có CUDA"; else bad "COLMAP KHÔNG có CUDA"; fi
+  if colmap global_mapper -h >/dev/null 2>&1; then good "global_mapper (GLOMAP) có sẵn"; else bad "global_mapper"; fi
+else
+  bad "không thấy lệnh colmap"
+fi
+
+hdr "Python data tools"
+if python - <<'PY'
+import importlib
+for m in ["pycolmap", "open3d", "plyfile", "trimesh", "laspy", "rosbags", "viser", "nerfview", "cv2"]:
+    mod = importlib.import_module(m)
+    print(f"  {m:10s} {getattr(mod, '__version__', '')}")
+PY
+then good "import OK"; else bad "thiếu package Python"; fi
+
+hdr "Node + splat-transform"
+if command -v splat-transform >/dev/null; then
+  echo "  node $(node --version) | splat-transform $(splat-transform --version 2>/dev/null)"
+  echo "  GPU cho nén SOG (WebGPU/Vulkan):"
+  splat-transform --list-gpus 2>&1 | sed 's/^/    /'
+  good "splat-transform"
+else
+  bad "splat-transform"
+fi
+
+hdr "Hiển thị X11 / OpenGL (tùy chọn)"
+if [[ -n "${DISPLAY:-}" ]] && command -v glxinfo >/dev/null; then
+  if GLX="$(glxinfo -B 2>/dev/null)" && R="$(grep 'OpenGL renderer' <<<"$GLX")"; then
+    echo "  $R"
+    if grep -qi nvidia <<<"$R"; then good "OpenGL qua GPU NVIDIA"; else bad "OpenGL không phải NVIDIA (đang render bằng CPU?)"; fi
+  else
+    bad "glxinfo lỗi: chạy 'make x11' trên host, kiểm tra DISPLAY=$DISPLAY"
+  fi
+else
+  echo "  (bỏ qua: không có DISPLAY)"
+fi
+
+printf '\n\033[1mKết quả: %d OK, %d lỗi\033[0m\n' "$PASS" "$FAIL"
+exit $(( FAIL > 0 ))

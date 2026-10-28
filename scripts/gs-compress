@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Nén / chuyển định dạng file Gaussian bằng splat-transform (PlayCanvas).
+#   Input : point_cloud.ply (3DGS chuẩn: x,y,z, f_dc_*, f_rest_*, opacity, scale_*, rot_*)
+#   Output: cùng thư mục với input
+#     .spz   - định dạng nén của Niantic (~10x nhỏ hơn PLY), dùng trao đổi/truyền tải
+#     .sog   - định dạng web của PlayCanvas (texture WebP), kéo thả vào SuperSplat
+#     .html  - viewer độc lập, mở bằng trình duyệt (tùy chọn -w)
+# Dùng: gs-compress <file.ply> [-w]
+# Chuyển đổi khác: splat-transform --help  (đọc .splat/.ksplat/.spz/.sog/.lcc; ghi .glb/.csv ...)
+# =============================================================================
+set -euo pipefail
+
+[[ $# -lt 1 ]] && { sed -n '2,13p' "$0"; exit 1; }
+PLY="$(realpath "$1")"; HTML=0
+[[ "${2:-}" == "-w" ]] && HTML=1
+[[ -f "$PLY" ]] || { echo "[ERR] Không thấy $PLY"; exit 1; }
+BASE="${PLY%.ply}"
+
+hsize() { du -h "$1" | cut -f1; }
+
+splat-transform -w "$PLY" "$BASE.spz"
+splat-transform -w "$PLY" "$BASE.sog"
+(( HTML )) && splat-transform -w "$PLY" "$BASE.html"
+
+echo
+printf '  %-6s %8s\n' "PLY" "$(hsize "$PLY")" "SPZ" "$(hsize "$BASE.spz")" "SOG" "$(hsize "$BASE.sog")"
+if (( HTML )); then printf '  %-6s %8s\n' "HTML" "$(hsize "$BASE.html")"; fi
+echo "Xem/sửa: mở https://superspl.at/editor trên trình duyệt host, kéo thả file .ply hoặc .sog"

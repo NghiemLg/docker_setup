@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Tách frame từ video thành ảnh cho COLMAP.
+#   Input : video .mp4/.mov/.MOV (điện thoại, RealSense ghi .mp4, ...)
+#   Output: <scene_dir>/images/frame_00001.jpg ...
+# Dùng: gs-video2img <video> <scene_dir> [fps=2] [max_width=1920]
+# Gợi ý: 150-300 ảnh là đủ cho 1 vật thể / 1 phòng; quay chậm, tránh blur.
+set -euo pipefail
+
+[[ $# -lt 2 ]] && { sed -n '2,6p' "$0"; exit 1; }
+VIDEO="$1"; SCENE="$2"; FPS="${3:-2}"; MAXW="${4:-1920}"
+[[ -f "$VIDEO" ]] || { echo "Không thấy video: $VIDEO"; exit 1; }
+
+mkdir -p "$SCENE/images"
+if compgen -G "$SCENE/images/*" >/dev/null; then
+  echo "[ERR] $SCENE/images đã có ảnh. Xóa trước nếu muốn tách lại."; exit 1
+fi
+
+# scale chỉ thu nhỏ khi rộng hơn MAXW, giữ tỉ lệ; -q:v 2 = JPEG chất lượng cao
+ffmpeg -hide_banner -loglevel warning -i "$VIDEO" \
+  -vf "fps=${FPS},scale='min(${MAXW},iw)':-2" -q:v 2 \
+  "$SCENE/images/frame_%05d.jpg"
+
+N=$(find "$SCENE/images" -name '*.jpg' | wc -l)
+echo "[OK] $N ảnh -> $SCENE/images"
+echo "Tiếp: gs-colmap $SCENE"

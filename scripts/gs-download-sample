@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Tải dataset chuẩn để test pipeline / chạy baseline cho paper.
+#   tandt      (~650 MB) Tanks&Temples (truck, train) + Deep Blending (drjohnson, playroom)
+#              bản đã chạy COLMAP từ repo 3DGS gốc -> có sẵn images/ + sparse/0
+#              -> train ngay: gs-train /root/ws/datasets/tandt/truck -f 1
+#   mipnerf360 (~12 GB)  9 scene chuẩn của hầu hết paper 3DGS (bảng PSNR/SSIM/LPIPS)
+#              -> gs-train /root/ws/datasets/360_v2/garden -f 4
+# Dùng: gs-download-sample [tandt|mipnerf360]
+# =============================================================================
+set -euo pipefail
+
+WHICH="${1:-tandt}"
+DST=/root/ws/datasets
+mkdir -p "$DST"
+
+case "$WHICH" in
+  tandt)
+    URL="https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/input/tandt_db.zip"
+    ZIP="$DST/tandt_db.zip"
+    [[ -f "$ZIP" ]] || wget -c -O "$ZIP" "$URL"
+    unzip -q -n "$ZIP" -d "$DST"
+    echo "[OK] Scene:"; find "$DST/tandt" "$DST/db" -mindepth 1 -maxdepth 1 -type d 2>/dev/null
+    ;;
+  mipnerf360)
+    cd /opt/gsplat/examples
+    python datasets/download_dataset.py --dataset mipnerf360 --save_dir "$DST"
+    echo "[OK] $DST/360_v2"
+    ;;
+  *)
+    sed -n '2,9p' "$0"; exit 1 ;;
+esac

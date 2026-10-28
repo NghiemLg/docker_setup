@@ -1,0 +1,58 @@
+# ~/.zshrc tối giản cho gs_env — không dùng oh-my-zsh, không phụ thuộc config cũ
+# Ghi đè cá nhân: tạo /root/ws/.zshrc.local (nằm trên host, không mất khi rebuild)
+
+export LANG=C.UTF-8
+export EDITOR=vim
+
+# --- History (lưu trong volume gs_cache để giữ qua các lần tạo lại container) ---
+HISTFILE=/root/.cache/zsh_history
+HISTSIZE=50000
+SAVEHIST=50000
+setopt HIST_IGNORE_DUPS HIST_IGNORE_SPACE SHARE_HISTORY
+setopt AUTO_CD INTERACTIVE_COMMENTS NO_BEEP
+
+# --- Completion + phím lên/xuống tìm history theo prefix ---
+autoload -Uz compinit && compinit -u
+zstyle ':completion:*' menu select
+bindkey -e
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey '^[[A' up-line-or-beginning-search
+bindkey '^[[B' down-line-or-beginning-search
+
+# --- Conda: kích hoạt env gs ---
+if [[ -f /opt/conda/etc/profile.d/conda.sh ]]; then
+  source /opt/conda/etc/profile.d/conda.sh
+  conda activate gs
+fi
+
+# --- Prompt: (env) [gs_env] ~/path (git-branch) ---
+autoload -Uz vcs_info
+precmd() { vcs_info }
+zstyle ':vcs_info:git:*' formats ' %F{magenta}(%b)%f'
+setopt PROMPT_SUBST
+PROMPT='%F{green}(${CONDA_DEFAULT_ENV})%f %F{cyan}[gs_env]%f %F{yellow}%~%f${vcs_info_msg_0_} %# '
+
+# --- Alias ---
+alias ll='ls -alFh --color=auto'
+alias ls='ls --color=auto'
+alias gpu='watch -n 1 nvidia-smi'
+alias ws='cd /root/ws'
+alias gsx='cd /opt/gsplat/examples'
+alias tb='tensorboard --bind_all --logdir'
+# pip cài thêm package mà không cho đổi torch/numpy đang dùng
+alias pipc='pip install -c /opt/constraints.txt'
+
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-root}
+mkdir -p -m 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+nv-gui() { __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia "$@"; }
+alias colmap-gui='nv-gui colmap gui'
+export PATH=/opt/gs-scripts:$PATH
+
+# --- Plugin (cài qua apt). syntax-highlighting phải source cuối cùng ---
+[[ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]] && \
+  source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+[[ -f /root/ws/.zshrc.local ]] && source /root/ws/.zshrc.local
+[[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]] && \
+  source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh

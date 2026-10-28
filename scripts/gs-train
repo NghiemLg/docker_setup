@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Train 3DGS bằng gsplat examples/simple_trainer.py (baseline chuẩn để so sánh paper).
+#   Input : <scene>/images*, <scene>/sparse/0/*.bin   (từ gs-colmap)
+#   Output: /root/ws/results/<tên>/ply/point_cloud_<step>.ply   (Gaussian, mở bằng SuperSplat)
+#           .../ckpts/ckpt_<step>_rank0.pt   (checkpoint PyTorch)
+#           .../stats/*.json                 (PSNR/SSIM/LPIPS trên tập test, mỗi 8 ảnh lấy 1)
+#           .../renders/                     (ảnh render test)  .../tb/ (tensorboard)
+# Viewer web khi đang train: http://localhost:8080 (SSH: ssh -L 8080:localhost:8080 ...)
+#
+# Dùng: gs-train <scene> [-s default|mcmc] [-f factor] [-n name] [-- tham số khác]
+#   -s  strategy densification: default (ADC gốc 3DGS) | mcmc (3DGS-MCMC, ít floater)
+#   -f  data_factor: 1 = ảnh gốc, 4 = ảnh /4 (mặc định 4; ảnh < 1600px nên dùng 1-2)
+#   -n  tên thư mục kết quả (mặc định <scene>_<strategy>_<thời gian>)
+# Ví dụ thêm tham số: gs-train ws/scenes/lab -s mcmc -- --max_steps 15000 --with_ut
+#   (--with_ut --with_eval3d: bật 3DGUT cho camera fisheye/rolling shutter)
+# Xem mọi tham số:   cd /opt/gsplat/examples && python simple_trainer.py default --help
+# =============================================================================
+set -euo pipefail
+
+usage() { sed -n '2,20p' "$0"; exit 1; }
+[[ $# -lt 1 ]] && usage
+SCENE="$(realpath "$1")"; shift
+STRATEGY=default; FACTOR=4; NAME=""
+while getopts "s:f:n:h" opt; do
+  case $opt in
+    s) STRATEGY=$OPTARG ;;
+    f) FACTOR=$OPTARG ;;
+    n) NAME=$OPTARG ;;
+    *) usage ;;
+  esac
+done
+shift $((OPTIND - 1))
+[[ "${1:-}" == "--" ]] && shift
+
+[[ -d "$SCENE/sparse" ]] || { echo "[ERR] $SCENE chưa có sparse/ -> chạy gs-colmap trước"; exit 1; }
+if (( FACTOR > 1 )) && [[ ! -d "$SCENE/images_$FACTOR" ]]; then
+  echo "[ERR] Thiếu $SCENE/images_$FACTOR -> gs-colmap tạo sẵn, hoặc dùng -f 1"; exit 1
+fi
+
+NAME="${NAME:-$(basename "$SCENE")_${STRATEGY}_$(date +%m%d_%H%M)}"
+OUT="/root/ws/results/$NAME"
+mkdir -p "$OUT"
+echo "== Train $SCENE | strategy=$STRATEGY | factor=$FACTOR -> $OUT"
+echo "== Viewer: http://localhost:8080"
+
+cd /opt/gsplat/examples
+python simple_trainer.py "$STRATEGY" \
+  --data_dir "$SCENE" \
+  --data_factor "$FACTOR" \
+  --result_dir "$OUT" \
+  --save_ply \
+  "$@" 2>&1 | tee "$OUT/train.log"
+
+LAST_PLY="$(ls -1v "$OUT"/ply/*.ply 2>/dev/null | tail -n1 || true)"
+echo
+echo "[OK] Kết quả: $OUT"
+if [[ -n "$LAST_PLY" ]]; then
+  echo "     PLY cuối: $LAST_PLY"
+  echo "Tiếp: gs-compress $LAST_PLY   (hoặc kéo thả .ply vào https://superspl.at/editor)"
+fi

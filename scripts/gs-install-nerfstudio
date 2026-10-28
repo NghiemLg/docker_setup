@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# =============================================================================
+# (TÙY CHỌN) Cài Nerfstudio vào conda env RIÊNG tên "ns".
+# Lý do tách env: nerfstudio 1.1.5 pin gsplat==1.4.0 và viser==1.0.0, xung đột với
+# gsplat main trong env "gs". Env đặt trong /root/.cache (volume gs_cache) nên
+# không mất khi tạo lại container.
+# Sau khi cài:  conda activate /root/.cache/conda-envs/ns
+#               ns-process-data video --data x.mp4 --output-dir ...   |   ns-train splatfacto ...
+# Lần đầu chạy splatfacto, gsplat 1.4.0 sẽ JIT-compile CUDA (~5-10 phút).
+# =============================================================================
+set -euo pipefail
+
+PREFIX=/root/.cache/conda-envs/ns
+TORCH_CUDA="${TORCH_CUDA:-$(python -c 'import torch;print("cu"+torch.version.cuda.replace(".",""))')}"
+
+source /opt/conda/etc/profile.d/conda.sh
+if [[ ! -d "$PREFIX" ]]; then
+  conda create -y -p "$PREFIX" python=3.10 pip
+fi
+conda activate "$PREFIX"
+
+pip install --no-cache-dir torch==2.7.1 torchvision==0.22.1 \
+  --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
+printf 'torch==2.7.1\ntorchvision==0.22.1\n' > "$PREFIX/constraints.txt"
+pip install --no-cache-dir -c "$PREFIX/constraints.txt" nerfstudio
+
+ns-install-cli >/dev/null 2>&1 || true
+echo "[OK] Nerfstudio: $(pip show nerfstudio | grep Version)"
+echo "Dùng: conda activate $PREFIX"

@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Ảnh -> camera pose + sparse point cloud bằng COLMAP (GPU SIFT).
+#   Input : <scene>/images/*.jpg|png
+#   Output: <scene>/database.db                (SQLite: feature + match)
+#           <scene>/sparse/0/cameras.bin        (nội tham số camera)
+#           <scene>/sparse/0/images.bin         (pose từng ảnh, world->camera)
+#           <scene>/sparse/0/points3D.bin       (điểm 3D dùng khởi tạo Gaussian)
+#           <scene>/images_2, images_4, images_8 (ảnh thu nhỏ .png cho --data_factor)
+# Đây đúng layout mà gsplat simple_trainer.py và graphdeco 3DGS đọc được.
+#
+# Dùng: gs-colmap <scene> [tùy chọn]
+#   -m global|incremental   mapper (mặc định global = GLOMAP, nhanh hơn nhiều)
+#   -M exhaustive|sequential|vocab_tree
+#                           matcher (sequential cho video; exhaustive cho ảnh rời <500)
+#   -c OPENCV|PINHOLE|SIMPLE_RADIAL|OPENCV_FISHEYE   camera model (mặc định OPENCV)
+#   -s 0|1                  1 = mọi ảnh dùng chung 1 camera (mặc định 1)
+#   -f "2 4 8"              các hệ số thu nhỏ ảnh cần tạo
+#   -o                      xóa kết quả cũ và chạy lại
+# =============================================================================
+set -euo pipefail
+
+usage() { sed -n '2,21p' "$0"; exit 1; }
+[[ $# -lt 1 ]] && usage
+SCENE="$(realpath "$1")"; shift
+
+MAPPER=global; MATCHER=""; CAM=OPENCV; SINGLE=1; FACTORS="2 4 8"; OVERWRITE=0
+while getopts "m:M:c:s:f:oh" opt; do
+  case $opt in
+    m) MAPPER=$OPTARG ;;
+    M) MATCHER=$OPTARG ;;
+    c) CAM=$OPTARG ;;
+    s) SINGLE=$OPTARG ;;
+    f) FACTORS=$OPTARG ;;
+    o) OVERWRITE=1 ;;
+    *) usage ;;
+  esac
+done
+
+IMG="$SCENE/images"; DB="$SCENE/database.db"; SPARSE="$SCENE/sparse"
+[[ -d "$IMG" ]] || { echo "[ERR] Không có $IMG"; exit 1; }
+NIMG=$(find "$IMG" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | wc -l)
+(( NIMG > 0 )) || { echo "[ERR] $IMG không có ảnh"; exit 1; }
+
+# Tự chọn matcher: tên ảnh dạng frame_xxxxx (từ video) -> sequential
+if [[ -z "$MATCHER" ]]; then
+  if [[ -n "$(find "$IMG" -name 'frame_*' -print -quit)" ]]; then MATCHER=sequential
+  elif (( NIMG > 500 )); then MATCHER=vocab_tree
+  else MATCHER=exhaustive; fi
+fi
+
+if (( OVERWRITE )); then rm -rf "$DB" "$SPARSE"; fi
+[[ -e "$DB" ]] && { echo "[ERR] $DB đã tồn tại (dùng -o để chạy lại)"; exit 1; }
+mkdir -p "$SPARSE"
+
+echo "== Scene: $SCENE | $NIMG ảnh | camera $CAM (single=$SINGLE) | matcher $MATCHER | mapper $MAPPER"
+T0=$SECONDS
+
+echo "== [1/4] feature_extractor (SIFT, GPU)"
+colmap feature_extractor \
+  --database_path "$DB" --image_path "$IMG" \
+  --ImageReader.camera_model "$CAM" \
+  --ImageReader.single_camera "$SINGLE" \
+  --FeatureExtraction.use_gpu 1
+
+echo "== [2/4] ${MATCHER}_matcher"
+MATCH_ARGS=(--database_path "$DB" --FeatureMatching.use_gpu 1)
+if [[ "$MATCHER" == "vocab_tree" ]]; then
+  # COLMAP 4.x tự tải vocab tree khi build có DOWNLOAD_ENABLED (mặc định ON)
+  colmap vocab_tree_matcher "${MATCH_ARGS[@]}"
+else
+  colmap "${MATCHER}_matcher" "${MATCH_ARGS[@]}"
+fi
+
+echo "== [3/4] ${MAPPER} mapper"
+if [[ "$MAPPER" == "global" ]]; then
+  colmap global_mapper --database_path "$DB" --image_path "$IMG" --output_path "$SPARSE"
+else
+  colmap mapper --database_path "$DB" --image_path "$IMG" --output_path "$SPARSE"
+fi
+
+[[ -d "$SPARSE/0" ]] || { echo "[ERR] Không tạo được model nào trong $SPARSE"; exit 1; }
+NMODEL=$(find "$SPARSE" -mindepth 1 -maxdepth 1 -type d | wc -l)
+echo "-- Thống kê model 0:"
+colmap model_analyzer --path "$SPARSE/0" 2>&1 | grep -E 'Cameras|Images|Registered|Points|Mean reprojection' | sed 's/^/   /' || true
+if (( NMODEL > 1 )); then
+  echo "[WARN] Có $NMODEL model rời nhau (sparse/0..$((NMODEL-1))). gsplat chỉ dùng sparse/0."
+  echo "       Thường do thiếu overlap giữa các nhóm ảnh -> chụp thêm ảnh nối giữa các vùng."
+fi
+
+echo "== [4/4] Tạo ảnh thu nhỏ: $FACTORS (giống cách gsplat resize: bicubic, .png)"
+# shellcheck disable=SC2086
+python - "$SCENE" $FACTORS <<'PY'
+import os, sys
+import imageio.v2 as imageio
+import numpy as np
+from PIL import Image
+scene, factors = sys.argv[1], [int(f) for f in sys.argv[2:]]
+src = os.path.join(scene, "images")
+files = sorted(
+    os.path.relpath(os.path.join(dp, f), src)
+    for dp, _, fs in os.walk(src) for f in fs
+    if f.lower().endswith((".jpg", ".jpeg", ".png"))
+)
+for fac in factors:
+    dst = os.path.join(scene, f"images_{fac}")
+    for rel in files:
+        out = os.path.join(dst, os.path.splitext(rel)[0] + ".png")
+        if os.path.isfile(out):
+            continue
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        im = imageio.imread(os.path.join(src, rel))[..., :3]
+        size = (int(round(im.shape[1] / fac)), int(round(im.shape[0] / fac)))
+        imageio.imwrite(out, np.array(Image.fromarray(im).resize(size, Image.BICUBIC)))
+    print(f"   images_{fac}: {len(files)} ảnh")
+PY
+
+echo "[OK] Xong sau $((SECONDS - T0)) s. Xem trực quan: colmap gui (File > Import model > $SPARSE/0)"
+echo "Tiếp: gs-train $SCENE"

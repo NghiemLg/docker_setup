@@ -1,0 +1,58 @@
+services:
+  gs_env:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CUDA_VERSION: ${CUDA_VERSION:-12.8.1}
+        TORCH_CUDA: ${TORCH_CUDA:-cu128}
+        TORCH_VERSION: ${TORCH_VERSION:-2.9.1}
+        TORCHVISION_VERSION: ${TORCHVISION_VERSION:-0.24.1}
+        CUDA_ARCH: ${CUDA_ARCH:-86}
+        TORCH_CUDA_ARCH_LIST: ${TORCH_CUDA_ARCH_LIST:-8.6}
+        COLMAP_VERSION: ${COLMAP_VERSION:-4.2.1}
+        GSPLAT_REF: ${GSPLAT_REF:-main}
+        MAX_JOBS: ${MAX_JOBS:-8}
+    image: gs-env:v1.0
+    container_name: gs_env
+    network_mode: "host"      # viewer gsplat :8080, tensorboard :6006 mở thẳng trên host
+    ipc: "host"               # shared memory cho PyTorch DataLoader (mặc định chỉ 64MB)
+    privileged: true
+    stdin_open: true          # docker run -i
+    tty: true                 # docker run -t
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=/tmp/.gs-xauth/xauth
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - NVIDIA_DISABLE_REQUIRE=${NVIDIA_DISABLE_REQUIRE:-false}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Mount THƯ MỤC (không phải file) để không bị Docker tạo nhầm thành thư mục
+      # khi host reboot; host/x11_auth.sh ghi file xauth vào đây
+      - /tmp/.gs-xauth:/tmp/.gs-xauth:rw
+      - ${WS_DIR:-./ws}:/root/ws                 # dữ liệu, scene, kết quả train
+      - ./scripts:/opt/gs-scripts:ro             # sửa script trên host có hiệu lực ngay
+      - gs_cache:/root/.cache                    # cache pip/torch_extensions/zsh history
+      - /dev:/dev
+      - /etc/udev/rules.d:/etc/udev/rules.d:ro
+      - /run/udev:/run/udev:ro
+      - /media:/media
+      - /mnt:/mnt
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    restart: unless-stopped
+    command: zsh
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    working_dir: /root
+
+volumes:
+  gs_cache:
